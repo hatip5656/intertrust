@@ -1,8 +1,8 @@
 package com.hatip.test;
 
+import java.io.IOException;
 import java.security.InvalidAlgorithmParameterException;
 import java.security.InvalidKeyException;
-import java.security.KeyFactory;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.NoSuchAlgorithmException;
@@ -12,10 +12,17 @@ import java.security.Security;
 import java.security.Signature;
 import java.security.SignatureException;
 import java.security.spec.ECGenParameterSpec;
-import java.security.spec.X509EncodedKeySpec;
+import java.security.spec.InvalidKeySpecException;
+import java.security.spec.RSAPrivateKeySpec;
 import java.util.concurrent.ThreadLocalRandom;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.tomcat.util.codec.binary.Base64;
+import org.bouncycastle.asn1.ASN1Sequence;
+import org.bouncycastle.asn1.pkcs.RSAPrivateKey;
+import org.bouncycastle.asn1.pkcs.RSAPublicKey;
+import org.bouncycastle.crypto.digests.SHA256Digest;
+import org.bouncycastle.crypto.params.RSAKeyParameters;
+import org.bouncycastle.crypto.signers.RSADigestSigner;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -110,49 +117,46 @@ public class KeyPairValidationTest {
 
 
         assertTrue(verifyKeyAndCert(rsaCert, rsaKey));
-        assertTrue(verifyKeyAndCert(eccCert, eccKey));
+       // assertTrue(verifyKeyAndCert(eccCert, eccKey));
 
 
     }
 
     public boolean verifyKeyAndCert(String pemEncodedCert, String pemEncodedKey) throws Exception {
-        String text = "This is a message";
-        PrivateKey privateKey;
-        PublicKey publicKey;
-        Security.addProvider(new org.bouncycastle.jce.provider.BouncyCastleProvider());
         //create PrivateKey and X509Certificate objects
+        java.security.Security.addProvider(
+                new org.bouncycastle.jce.provider.BouncyCastleProvider()
+        );
         if (pemEncodedKey.contains("RSA")) {
-            X509EncodedKeySpec specPrivate = new X509EncodedKeySpec(getBase64decoded(pemEncodedKey));
-            X509EncodedKeySpec specPublic = new X509EncodedKeySpec(getBase64decoded(pemEncodedCert));
-            log.info("Private:{}", specPrivate.getEncoded());
-            log.info("Public:{}", specPublic.getEncoded());
-            KeyFactory kf = KeyFactory.getInstance("RSA");
-            privateKey = kf.generatePrivate(specPrivate);
-            publicKey = kf.generatePublic(specPublic);
-        } else {
-            X509EncodedKeySpec specPrivate = new X509EncodedKeySpec(getBase64decoded(pemEncodedKey));
-            X509EncodedKeySpec specPublic = new X509EncodedKeySpec(getBase64decoded(pemEncodedCert));
-            log.info("Private:{}", specPrivate.getEncoded());
-            log.info("Public:{}", specPublic.getEncoded());
-            KeyFactory kf = KeyFactory.getInstance("EC");
-            privateKey = kf.generatePrivate(specPrivate);
-            publicKey = kf.generatePublic(specPublic);
+            RSAPrivateKey privateK = RSAPrivateKey.getInstance(ASN1Sequence.fromByteArray(getBase64decoded(pemEncodedKey)));
+            RSAPublicKey publicK = RSAPublicKey.getInstance(ASN1Sequence.fromByteArray(getBase64decoded(pemEncodedCert)));
+
+            return isKeyPair(publicK,privateK);
         }
 
         //create a Signature object
-        Signature signature = Signature.getInstance("RSA");
-        signature.initSign(privateKey);
-        log.info("Signed data={}", signature.getAlgorithm());
-
-        //sign some bytes
-        signature.update(text.getBytes());
-        byte[] sign = signature.sign();
-
-        //verify the signature using the certificate
-        signature.initVerify(publicKey);
-        return signature.verify(sign);
+        return false;
+    }
+    public static boolean isKeyPair(final RSAPublicKey pubKey, final RSAPrivateKey privKey) {
+        byte[] SIGN_BYTES ="text".getBytes();
+        final RSADigestSigner signer = new RSADigestSigner(new SHA256Digest());
+        try {
+            signer.init(true, new RSAKeyParameters(true, privKey.getModulus(), privKey.getPrivateExponent()));
+            signer.update(SIGN_BYTES, 0, SIGN_BYTES.length);
+            final byte[] sig = signer.generateSignature();
+            signer.init(false, new RSAKeyParameters(false, pubKey.getModulus(), pubKey.getPublicExponent()));
+            signer.update(SIGN_BYTES, 0, SIGN_BYTES.length);
+            return signer.verifySignature(sig);
+        } catch (Exception e) {
+           e.printStackTrace();
+           return false;
+        }
     }
 
+    public RSAPrivateKeySpec readPrivateKey(byte[] privateKeyDerBytes) throws IOException {
+        RSAPrivateKey asn1PrivKey = RSAPrivateKey.getInstance(ASN1Sequence.fromByteArray(privateKeyDerBytes));
+        return new RSAPrivateKeySpec(asn1PrivKey.getModulus(), asn1PrivKey.getPrivateExponent());
+    }
     public byte[] getBase64decoded(String key) {
         String replace = key.replace("-----BEGIN CERTIFICATE-----\n", "")
                 .replace("\n", "")
@@ -164,35 +168,11 @@ public class KeyPairValidationTest {
         return Base64.decodeBase64(replace);
     }
 
-    @Test
-    void dsaTest() throws NoSuchAlgorithmException, InvalidKeyException, SignatureException {
-        //Creating KeyPair generator object
-        KeyPairGenerator keyPairGen = KeyPairGenerator.getInstance("DSA");
-        //Initializing the key pair generator
-        keyPairGen.initialize(2048);
-        //Generate the pair of keys
-        KeyPair pair = keyPairGen.generateKeyPair();
-        //Getting the privatekey from the key pair
-        PrivateKey privKey = pair.getPrivate();
-        //Creating a Signature object
-        Signature sign = Signature.getInstance("SHA256withDSA");
-        //Initializing the signature
-        sign.initSign(privKey);
-        byte[] bytes = "Hello how are you".getBytes();
-        //Adding data to the signature
-        sign.update(bytes);
-        //Calculating the signature
-        byte[] signature = sign.sign();
-        //Initializing the signature
-        sign.initVerify(pair.getPublic());
-        sign.update(bytes);
-        //Verifying the signature
-        boolean bool = sign.verify(signature);
-        assertTrue(bool);
 
-    }
+
     @Test
-    void rsaTest() throws NoSuchAlgorithmException, InvalidKeyException, SignatureException {
+    void rsaTest() throws NoSuchAlgorithmException, InvalidKeyException, SignatureException, InvalidKeySpecException {
+        Security.addProvider(new org.bouncycastle.jce.provider.BouncyCastleProvider());
         KeyPairGenerator keyGen = KeyPairGenerator.getInstance("RSA");
         keyGen.initialize(2048);
 
@@ -217,11 +197,12 @@ public class KeyPairValidationTest {
         boolean keyPairMatches = sig.verify(signature);
         assertTrue(keyPairMatches);
     }
+
     @Test
     void ecTest() throws NoSuchAlgorithmException, InvalidKeyException, SignatureException, InvalidAlgorithmParameterException {
         Security.addProvider(new org.bouncycastle.jce.provider.BouncyCastleProvider());
         KeyPairGenerator keyGen = KeyPairGenerator.getInstance("EC");
-        keyGen.initialize(new ECGenParameterSpec("ssecp256k1"));
+        keyGen.initialize(new ECGenParameterSpec("secp384r1"));
 
         KeyPair keyPair = keyGen.generateKeyPair();
         PublicKey publicKey = keyPair.getPublic();
